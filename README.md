@@ -149,4 +149,4 @@ This script will load the pre-trained model checkpoint and fine-tune it on the c
 
 ## 📜 License
 
-This project is licensed under the MIT License. See the `LICENSE` file for details.
+This project is licensed under the Apache-2.0 License. See the `LICENSE` file for details.
