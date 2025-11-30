@@ -7,47 +7,19 @@ import time
 import os
 import copy
 import wandb
+import json
 
 from src.model.slm import TinySLM
 from src.data.dataset import TextBookDataset
 from src.data.tokenizer import train_tokenizer
 
-# Hyperparameters and Configurations
 
-CONFIG = {
-    # System
-    'device': 'cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu',
-    'num_workers': 0,      # Set to 0 for simpler debugging, 4 for speed
-    
-    # Model Architecture (Must match what we built)
-    'vocab_size': 32000,
-    'd_model': 256,
-    'n_layers': 8,
-    'n_head': 8,
-    'n_kv_head': 2,        # GQA
-    'window_size': 64,     # SWA
-    'max_seq_len': 256,    # Short context for faster training
-    'mlp_ratio': 2.5,
-    
-    # Training (The Optimizer Math)
-    'batch_size': 4,       # Micro-batch (fits in memory)
-    'accum_steps': 8,      # Virtual Batch Size = 4 * 8 = 32
-    'learning_rate': 3e-4, # Peak LR (standard for small models)
-    'max_epochs': 100,
-    'patience': 3,
-    'weight_decay': 0.01,  # AdamW regularization
-    'grad_clip': 1.0,      # Prevents exploding gradients
-    
-    # Data Paths
-    'train_file': 'data/raw/hybrid_textbook_data.jsonl',
-    'val_file': 'data/raw/validation_textbook.jsonl',
-    'tokenizer_path': 'data/tokenizer/tiny_slm_tokenizer.json',
-    'save_dir': 'checkpoints',
-    
-    # Logging
-    'use_wandb': False,    # Set to True if you have an account
-    'log_interval': 10     # Print every 10 steps
-}
+# Hyperparameters and Configurations
+try:
+    with open('config/config.json', 'r') as f:
+        CONFIG = json.load(f)
+except FileNotFoundError:
+    raise FileNotFoundError("Configuration file 'config/config.json' not found.")
 
 # Utils: Cosine Scheduler with Warmup
 
@@ -137,25 +109,39 @@ def train():
     # Setup
     os.makedirs(CONFIG['save_dir'], exist_ok=True)
     device = CONFIG['device']
+    print(f"Using device: {device}")
+    mode = CONFIG['train_mode']
+    print(f"Training mode: {mode}")
     
-    # Ensure Tokenizer Exists
-    # If the user hasn't trained a tokenizer yet, do it now
-    if not os.path.exists(CONFIG['tokenizer_path']):
-        print("Training tokenizer...")
-        train_tokenizer(CONFIG['train_file'], CONFIG['vocab_size'])
-        
-    # Train Data Loader
-    train_ds = TextBookDataset(
-        file_path=CONFIG['train_file'],
+    
+    if mode == "huggingface":
+        train_source = CONFIG['hf_dataset_name']
+        print(f"Training mode: Hugging Face Dataset - {train_source}")
+        if not os.path.exists(CONFIG['tokenizer_path']):
+            raise FileNotFoundError("Tokenizer not found. Please provide a tokenizer for Hugging Face datasets.")
+    else:
+        train_source = CONFIG['train_file']
+        print(f"Training mode: Local File - {train_source}")
+        if not os.path.exists(CONFIG['tokenizer_path']):
+            print("Tokenizer not found. Training a new tokenizer...")
+            train_tokenizer(
+                dataset_name=CONFIG['train_file'],
+                voacb_size=CONFIG['vocab_size'],
+            )
+            print("Tokenizer training complete.")
+            
+    dataset = TextBookDataset(
+        source=train_source,
         tokenizer_path=CONFIG['tokenizer_path'],
         max_length=CONFIG['max_seq_len']
     )
-    
+            
     train_loader = DataLoader(
-        train_ds,
+        dataset,
         batch_size=CONFIG['batch_size'],
         num_workers=CONFIG['num_workers'],
-        pin_memory=True if device == "cuda" else False
+        pin_memory=True if device == "cuda" else False,
+        shuffle=True
     )
     
     if os.path.exists(CONFIG['val_file']):
@@ -200,9 +186,10 @@ def train():
     # Loop variables
     # We must estimate the total steps roughly since it's an IterableDataset
     # Let's assume 1000 samples / 4 batch_size = 250 steps per epoch
-    est_steps_per_epoch = 1000 // CONFIG['batch_size']
+    est_steps_per_epoch = len(train_loader)
     max_iters = CONFIG['max_epochs'] * est_steps_per_epoch
     warmup_iters = int(max_iters * 0.1) # 10% warmup
+    print(f"Total training steps: {max_iters}, Warmup steps: {warmup_iters}")
     
     iter_num=0
     running_loss=0.0
@@ -288,7 +275,7 @@ def train():
                 if iter_num % CONFIG['log_interval'] == 0:
                     
                     # Compute Perplexity
-                    avg_loss = running_loss / CONFIG['log_interval']
+                    avg_loss = running_loss / (CONFIG['log_interval']*CONFIG['accum_steps'])
                     perplexity = math.exp(avg_loss) if avg_loss < 20 else -1
                     
                     # Calculate Tokens per second (throughput)
@@ -327,6 +314,14 @@ def train():
             val_ppl = math.exp(val_loss) if val_loss <20 else -1
             print(f" Val Loss: {val_loss:.4f} | Val PPL: {val_ppl:.1f}")
             
+            if CONFIG['use_wandb']:
+                wandb.log({
+                    "val/loss": val_loss,
+                    "val/perplexity": val_ppl
+                })
+                
+
+            
             # Early Stopping Check
             is_new_best = early_stopper(val_loss)
             
@@ -334,6 +329,16 @@ def train():
                 print("Found New Best Model! Saving checkpoint...")
                 best_model_weights = copy.deepcopy(model.state_dict())
                 torch.save(best_model_weights, f"{CONFIG['save_dir']}/best_model.pt")
+                
+                if CONFIG['use_wandb']:
+                    artifact = wandb.Artifact(
+                        'best-model',
+                        type='model'
+                    )
+                    
+                    artifact.add_file(f"{CONFIG['save_dir']}/best_model.pt")
+                    
+                    wandb.log_artifact(artifact)
                 
             if early_stopper.early_stop:
                 print("Early stopping triggered. Ending training.")

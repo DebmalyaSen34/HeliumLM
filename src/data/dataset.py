@@ -1,52 +1,78 @@
 import torch
 from torch.utils.data import IterableDataset
-import random
 import json
 from tokenizers import Tokenizer
+from datasets import load_dataset
+from typing import List, Tuple
 
 class TextBookDataset(IterableDataset):
-    def __init__(self, file_path: str, tokenizer_path: str, max_length=512):
-        self.file_path = file_path
+    def __init__(self, source: str, tokenizer_path: str, max_length=512):
         self.max_length = max_length
-        
         self.tokenizer = Tokenizer.from_file(tokenizer_path)
-        self.pad_token_id = self.tokenizer.token_to_id("[PAD]")
+        # self.pad_token_id = self.tokenizer.token_to_id("[PAD]")
+        self.sep_token_id = self.tokenizer.token_to_id("[SEP]")
         
-    def __iter__(self):
-        """
-        Generator that reads the file, tokenizes dynamically and yields chunks
-        """
-        buffer_token = []
+        if self.sep_token_id is None:
+            raise ValueError("Tokenizer must have a [SEP] token defined.")
         
-        with open(self.file_path, 'r', encoding='utf-8') as f:
-            for line in f:
-                
-                try:
-                    record = json.loads(line)
-                    text = record['text']
-                    
-                    # Tokenize
-                    encode = self.tokenizer.encode(text)
-                    ids = encode.ids
-                    
-                    # Add [EOS] token using [SEP] as a stand-in
-                    ids.append(self.tokenizer.token_to_id("[SEP]"))
-                    
-                    buffer_token.extend(ids)
-                    
-                    # When buffer exceeds max_length, yield chunks
-                    while len(buffer_token) >= self.max_length:
-                        # Slice of a chunk
-                        chunk = buffer_token[:self.max_length]
-                        buffer_token = buffer_token[self.max_length:]
-                        
-                        # Prepare Input and Target
-                        # Input: [A, B, C, D]
-                        # Target: [B, C, D, E] (Next token prediction)
-                        
-                        # Ideally for training we just return the chunk
-                        # The training loop will handle shifting for next token prediction
-                        x = torch.tensor(chunk, dtype=torch.long)
-                        yield x, x # Target is same as input for next token prediction
-                except json.JSONDecodeError:
-                    continue
+        # Data loading and tokenization
+        print("Initializing PackedDataset...")
+        all_tokens = self._load_and_tokenize(source=source)
+        
+        # Chunking
+        print(f"Packing {len(all_tokens):,} tokens into chunks of max length {self.max_length}...")
+        
+        self.chunks = []
+        
+        for i in range(0, len(all_tokens)-self.max_length+1, self.max_length):
+            self.chunks.append(torch.tensor(all_tokens[i:i+self.max_length], dtype=torch.long))
+            
+        print(f"Total chunks created: {len(self.chunks)}")
+        
+    def _load_and_tokenize(self, source: str) -> List[int]:
+        """
+        Loads data from the source and returns a list of token IDs.
+
+        Args:
+            source (str): Source of the dataset. Can be a local file path (jsonl) or a HuggingFace dataset name.
+
+        Returns:
+            List[int]: List of token IDs from the tokenizer.
+        """
+        
+        all_ids = []
+        
+        if source.endswith('.jsonl'):
+            print(f"Loading dataset from local file: {source}...")
+            
+            with open(source, 'r', encoding='utf-8') as f:
+                for line in f:
+                    try:
+                        text = json.loads(line).get('text', '')
+                        if text:
+                            all_ids.extend(self.tokenizer.encode(text).ids)
+                            all_ids.append(self.sep_token_id)
+                    except json.JSONDecodeError:
+                        continue
+        else:
+            print(f"Downloading dataset from HugginFace: {source}...")
+            dataset = load_dataset(source, split='train')
+            print(f"Dataset downloaded with {len(dataset)} records.")
+            
+            for item in dataset:
+                text = item.get('text', item.get('response', ''))
+                if text:
+                    all_ids.extend(self.tokenizer.encode(text).ids)
+                    all_ids.append(self.sep_token_id)
+        return all_ids
+    
+    def __len__(self):
+        return len(self.chunks)
+    
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Returns a single chunk. For language modeling, the input and target are the same.
+        """
+        
+        chunk = self.chunks[idx]
+        return chunk, chunk

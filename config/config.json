@@ -1,0 +1,31 @@
+{
+    "device": "cuda",
+    "num_workers": 4,      
+    
+    "vocab_size": 32000,
+    "d_model": 256,
+    "n_layers": 8,
+    "n_head": 8,
+    "n_kv_head": 2,        
+    "window_size": 64,    
+    "max_seq_len": 256,
+    "mlp_ratio": 2.5,
+    
+    "batch_size": 64,       
+    "accum_steps": 1,      
+    "learning_rate": 3e-4, 
+    "max_epochs": 100,
+    "patience": 3,
+    "weight_decay": 0.01,  
+    "grad_clip": 1.0,
+    
+    "train_mode": "huggingface",
+    "hf_dataset_name": "batmanLovesAI/HeliumSLM-Dataset",
+    "train_file": "data/raw/hybrid_textbook_data.jsonl",
+    "val_file": "data/raw/validation_textbook.jsonl",
+    "tokenizer_path": "data/tokenizer/tiny_slm_tokenizer.json",
+    "save_dir": "checkpoints",
+    
+    "use_wandb": false,    
+    "log_interval": 10     
+}
