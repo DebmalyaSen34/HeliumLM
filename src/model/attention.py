@@ -5,7 +5,7 @@ import math
 from .rope import apply_rotary_pos_emb
 
 class EfficientAttention(nn.Module):
-    def __init__(self, d_model: int, n_head: int, n_kv_head: int, window_size: int):
+    def __init__(self, d_model: int, n_head: int, n_kv_head: int, window_size: int, dropout: float = 0.0, max_seq_len: int = 512):
         super().__init__()
         self.n_head = n_head # Number of query heads
         self.n_kv_head = n_kv_head # Number of key/value heads
@@ -30,7 +30,17 @@ class EfficientAttention(nn.Module):
         #* Output projection to combine heads back to d_model
         self.output_proj = nn.Linear(d_model, d_model, bias=False)
         
-    def forward(self, x: torch.Tensor, freqs_cis: torch.Tensor) -> torch.Tensor:
+        #* Regularization
+        self.attn_dropout = nn.Dropout(dropout)
+        self.resid_dropout = nn.Dropout(dropout)
+        
+        # Precompute the sliding window + casual mask
+        casual_mask = torch.tril(torch.ones(max_seq_len, max_seq_len))
+        window_mask = torch.triu(torch.ones(max_seq_len, max_seq_len), diagonal=-window_size+1)
+        combined_mask = casual_mask * window_mask
+        self.register_buffer("mask", combined_mask)
+        
+    def forward(self, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
         B, T, C = x.size() # Batch size, sequence length, model dimension (Channels)
         
         # Calculate Q, K, V
@@ -43,13 +53,11 @@ class EfficientAttention(nn.Module):
         v = self.v_proj(x).view(B, T, self.n_kv_head, self.d_head).transpose(1, 2)
         
         #* Apply RoPE to Query and Key
-        # Before that we must transpose to [B, T, head, dim]
-        q = q.transpose(1, 2)
-        k = k.transpose(1, 2)
-        q, k = apply_rotary_pos_emb(q, k, freqs_cis=freqs_cis)
+        q, k = apply_rotary_pos_emb(q, k, cos=cos, sin=sin)
         # Tranpose back to [B, head, T, dim]
         q = q.transpose(1, 2)
         k = k.transpose(1, 2)
+        v = v.transpose(1, 2)
         
         #* Since K and V have fewer heads, we need to repeat them
         # so that they can align with the Q heads during attention computation
@@ -58,35 +66,33 @@ class EfficientAttention(nn.Module):
         k = k.repeat_interleave(self.n_rep, dim=1)
         v = v.repeat_interleave(self.n_rep, dim=1)
         
-        # Calculate Scores
-        #* It calculates how much every token relates to every other token
-        att = (q @ k.transpose(-2, -1)) * (1.0/math.sqrt(self.d_head))
-        
-        #* Sliding window Mask
-        
-        #* Casual Mask: "Don't look into the future"
-        # Creates a lower trianlge of 1s
-        casual_mask = torch.tril(torch.ones(T, T, device=x.device))
-        
-        #* Window Mask: "Don't look too far back"
-        # Creates an upper traingle starting from `window_size` back
-        # If window is 16, it blocks everything older than 16 steps ago
-        window_mask = torch.triu(torch.ones(T, T, device=x.device), diagonal=-self.window_size+1)
-        
-        #* Combine masks
-        mask = casual_mask * window_mask # [T, T]
-        
-        # Apply Mask
-        att = att.masked_fill(mask == 0, float('-inf'))
-        
-        #* Softmax and Weighted Sum
-        att = F.softmax(att, dim=-1)
-        y = att @ v
+        #* Check if PyTorch has scaled_dot_product_attention (added in 2.4)
+        #* If available, it is more optimized than manual softmax + matmul
+        if hasattr(F, 'scaled_dot_product_attention'):
+            attn_mask = self.mask[:T, :T].to(torch.bool)
+            y = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask, dropout_p=self.attn_dropout.p if self.training else 0.0)
+        else:
+            # Calculate Score
+            #* It calculates how much every token relates to every other token
+            att = (q @ k.transpose(-2, -1)) * (1.0/math.sqrt(self.d_head))
+
+            mask = self.mask[:T, :T]
+
+            att = att.masked_fill(mask==0, float('-inf'))
+            
+            att = F.softmax(att, dim=-1)
+            att = self.attn_dropout(att)
+            y = att @ v
         
         #* Reshape and Output Projection
         # y: [B, n_head, T, d_head] -> [B, T, n_head, d_head] -> [B, T, C]
         y = y.transpose(1, 2).contiguous().view(B, T, C)
-        return self.output_proj(y)
+        
+        #* Dropout
+        y = self.output_proj(y)
+        y = self.resid_dropout(y)
+        
+        return y
     
 if __name__ == "__main__":
     model = EfficientAttention(d_model=256, n_head=8, n_kv_head=2, window_size=16)

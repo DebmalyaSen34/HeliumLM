@@ -39,7 +39,7 @@ class SwiGLUMLP(nn.Module):
     But it has 3 layers instead of 2.
     """
     
-    def __init__(self, d_model, expansion_factor=2.5):
+    def __init__(self, d_model, expansion_factor=2.5, dropout: float = 0.0):
         super().__init__()
         
         # Standard Transformer use expansion_factor of 4
@@ -52,6 +52,8 @@ class SwiGLUMLP(nn.Module):
         self.up_proj = nn.Linear(d_model, hidden_dim, bias=False)
         # 3. Down projection - Reduces back to d_model
         self.down_proj = nn.Linear(hidden_dim, d_model, bias=False)
+        # 4. Dropout for regularization
+        self.dropout = nn.Dropout(dropout)
         
     def forward(self, x):
         # Apply the SwiGLU activation: (SiLU(gate) * up_proj) -> down_proj
@@ -61,7 +63,8 @@ class SwiGLUMLP(nn.Module):
         # Element-wise multiplication (gating mechanism)
         fused = gate * up
         
-        return self.down_proj(fused)
+        # Apply down projection and dropout
+        return self.dropout(self.down_proj(fused))
     
 class DecoderBlock(nn.Module):
     """A Single Transformer Block.
@@ -77,13 +80,15 @@ class DecoderBlock(nn.Module):
         n_kv_head = config['n_kv_head']
         window_size = config['window_size']
         mlp_ratio = config.get('mlp_ratio', 2.5) # Default to 2.5 for efficiency
+        dropout = config.get('dropout', 0.0)
         
         # 1. Attention Engine
         self.self_attn = EfficientAttention(
             d_model=d_model,
             n_head=n_head,
             n_kv_head=n_kv_head,
-            window_size=window_size
+            window_size=window_size,
+            dropout=dropout
         )
         
         # 2, The Thinking Engine (FFN)
@@ -96,13 +101,13 @@ class DecoderBlock(nn.Module):
         self.input_layernorm = RMSNorm(d_model)
         self.post_attn_layernorm = RMSNorm(d_model)
         
-    def forward(self, x, freqs_cis):
+    def forward(self, x, cos, sin):
         
         # 1. Attention Block with Residual Connection
         # Norm before attention because it is more stable
         residual = x
         x = self.input_layernorm(x)
-        x = self.self_attn(x, freqs_cis)
+        x = self.self_attn(x, cos, sin)
         x = residual + x
         
         # 2. MLP Block with Residual Connection

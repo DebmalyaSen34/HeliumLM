@@ -1,17 +1,18 @@
 {
-    "device": "cuda",
+    "device": "mps",
     "num_workers": 4,      
     
     "vocab_size": 32000,
-    "d_model": 256,
-    "n_layers": 8,
+    "d_model": 512,
+    "n_layers": 10,
     "n_head": 8,
     "n_kv_head": 2,        
-    "window_size": 64,    
-    "max_seq_len": 256,
+    "window_size": 128,    
+    "max_seq_len": 512,
     "mlp_ratio": 2.5,
+    "dropout": 0.1,
     
-    "batch_size": 512,       
+    "batch_size": 64,       
     "accum_steps": 1,      
     "learning_rate": 3e-4, 
     "max_epochs": 100,
@@ -20,10 +21,10 @@
     "grad_clip": 1.0,
     
     "train_mode": "huggingface",
-    "hf_dataset_name": "batmanLovesAI/HeliumSLM-Dataset",
+    "hf_dataset_name": "roneneldan/TinyStories",
     "train_file": "data/raw/hybrid_textbook_data.jsonl",
     "val_file": "data/raw/validation_textbook.jsonl",
-    "tokenizer_path": "data/tokenizer/tiny_slm_tokenizer.json",
+    "tokenizer_path": "data/tokenizer/heliumLM-nano-tokenizer.json",
     "save_dir": "checkpoints",
     
     "use_wandb": false,    

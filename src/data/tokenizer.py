@@ -10,7 +10,7 @@ from tokenizers.trainers import BpeTrainer
 from tokenizers.pre_tokenizers import Whitespace
 from datasets import load_dataset
 
-def train_tokenizer(dataset_name: str, voacb_size=32000, min_frequency: int =2) -> Tokenizer:
+def train_tokenizer(dataset_name: str, vocab_size=32000, min_frequency: int =2) -> Tokenizer:
     print("--------- Training Tokenizer ---------")
     
     
@@ -41,7 +41,7 @@ def train_tokenizer(dataset_name: str, voacb_size=32000, min_frequency: int =2) 
         "[PAD]", "[UNK]", "[CLS]", "[SEP]", "[MASK]"
     ]
     trainer = BpeTrainer(
-        vocab_size=voacb_size,
+        vocab_size=vocab_size,
         special_tokens=special_tokens,
         min_frequency=min_frequency,
         show_progress=True

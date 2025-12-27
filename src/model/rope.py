@@ -20,10 +20,16 @@ def precompute_freq_cis(dim: int, end: int, theta: float = 10000.0):
     # Compute the outer product to get all position-frequency combinations
     freqs = torch.outer(t, freqs).float() # Shape: [end, dim//2]
     
-    # Turn them into polar coordinates (mag 1, angle freqs)
-    # Cis = cos + i*sin
-    freqs_cis = torch.polar(torch.ones_like(freqs), freqs)
-    return freqs_cis
+    # Create cosine and sine components by duplicating frequencies
+    #todo: need more explanation here
+    emb = torch.cat((freqs, freqs), dim=-1) # Shape: [end, dim]
+    return emb.cos(), emb.sin()  # Return cosine and sine components
+
+def rotate_half(x: torch.Tensor):
+    """Rotates half the hidden dims of the input."""
+    x1 = x[..., : x.shape[-1]//2]
+    x2 = x[..., x.shape[-1]//2 :]
+    return torch.cat((-x2, x1), dim=-1)
 
 def reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor):
     """
@@ -45,7 +51,7 @@ def reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor):
     
     return freqs_cis.view(*shape)
 
-def apply_rotary_pos_emb(xq: torch.Tensor, xk: torch.Tensor, freqs_cis: torch.Tensor):
+def apply_rotary_pos_emb(xq: torch.Tensor, xk: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor):
     """The Actual Rotation. We treat q/k vectors as complex numbers and multiply by the frequencies.
 
     Args:
@@ -54,15 +60,14 @@ def apply_rotary_pos_emb(xq: torch.Tensor, xk: torch.Tensor, freqs_cis: torch.Te
         freqs_cis (torch.Tensor): Polar coordinates of frequencies.
     """
     
-    # 1. Turn Query and Key into complex numbers
-    xq_ = torch.view_as_complex(xq.float().reshape(*xq.shape[:-1], -1, 2))
-    xk_ = torch.view_as_complex(xk.float().reshape(*xk.shape[:-1], -1, 2))
-    
-    # 2. Get the specific frequencies for the current sequence length
-    freqs_cis = reshape_for_broadcast(freqs_cis=freqs_cis, x=xq_)
-    
-    # 3. Rotate (Multiply) and convert back to real numbers
-    xq_out = torch.view_as_real(xq_ * freqs_cis).flatten(3)
-    xk_out = torch.view_as_real(xk_ * freqs_cis).flatten(3)
-    
+
+    # Reshape cos and sin for broadcasting
+    cos = cos.view(1, cos.shape[0], 1, cos.shape[1])
+    sin = sin.view(1, sin.shape[0], 1, sin.shape[1])
+
+    # Apply rotation matrix logic
+    # x_new = (x*cos) + (rotate_half(x)*sin)
+    xq_out = (xq*cos) + (rotate_half(xq)*sin)
+    xk_out = (xk*cos) + (rotate_half(xk)*sin)
+
     return xq_out.type_as(xq), xk_out.type_as(xk)
