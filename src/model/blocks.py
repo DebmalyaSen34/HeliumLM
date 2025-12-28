@@ -77,8 +77,9 @@ class DecoderBlock(nn.Module):
         
         d_model = config['d_model']
         n_head = config['n_head']
-        n_kv_head = config['n_kv_head']
-        window_size = config['window_size']
+        n_kv_head = config.get('n_kv_head', n_head) # Default to n_head if not specified
+        window_size = config.get('window_size', config['max_seq_len']) # Default to full sequence
+        max_seq_len = config['max_seq_len']
         mlp_ratio = config.get('mlp_ratio', 2.5) # Default to 2.5 for efficiency
         dropout = config.get('dropout', 0.0)
         
@@ -88,13 +89,15 @@ class DecoderBlock(nn.Module):
             n_head=n_head,
             n_kv_head=n_kv_head,
             window_size=window_size,
+            max_seq_len=max_seq_len,
             dropout=dropout
         )
         
         # 2, The Thinking Engine (FFN)
         self.mlp = SwiGLUMLP(
             d_model=d_model,
-            expansion_factor=mlp_ratio
+            expansion_factor=mlp_ratio,
+            dropout=dropout
         )
         
         # 3. Normalization Layers (1 before attention, 1 before FFN)

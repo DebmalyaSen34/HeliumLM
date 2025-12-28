@@ -5,12 +5,16 @@ import math
 from .rope import apply_rotary_pos_emb
 
 class EfficientAttention(nn.Module):
-    def __init__(self, d_model: int, n_head: int, n_kv_head: int, window_size: int, dropout: float = 0.0, max_seq_len: int = 512):
+    def __init__(self, d_model: int, n_head: int, n_kv_head: int, window_size: int, max_seq_len: int, dropout: float = 0.0):
         super().__init__()
         self.n_head = n_head # Number of query heads
         self.n_kv_head = n_kv_head # Number of key/value heads
         self.d_head = d_model // n_head # Dimension per head
-        self.window_size = window_size # Size of the local attention window
+        self.max_seq_len = max_seq_len # Maximum sequence length
+
+        #* Sliding window size for local attention
+        # If None, full attention is used
+        self.window_size = window_size if window_size is not None else max_seq_len
         
         #* The GQA Ratio (Grouped Query Attention Ratio)
         #* If n_head=8 and n_kv_head=2, then n_rep=4
@@ -36,9 +40,17 @@ class EfficientAttention(nn.Module):
         
         # Precompute the sliding window + casual mask
         casual_mask = torch.tril(torch.ones(max_seq_len, max_seq_len))
-        window_mask = torch.triu(torch.ones(max_seq_len, max_seq_len), diagonal=-window_size+1)
-        combined_mask = casual_mask * window_mask
-        self.register_buffer("mask", combined_mask)
+
+        #* Create sliding window mask
+        if self.window_size < max_seq_len: # Only apply if window_size is smaller than max_seq_len
+            # Mask out tokens that are outside the sliding window
+            far_history_mask = torch.tril(torch.ones(max_seq_len, max_seq_len), diagonal=-self.window_size)
+            final_mask = casual_mask - far_history_mask
+        else:
+            # Full attention (with casual masking)
+            final_mask = casual_mask
+
+        self.register_buffer("mask", final_mask.view(1, 1, max_seq_len, max_seq_len))
         
     def forward(self, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
         B, T, C = x.size() # Batch size, sequence length, model dimension (Channels)
@@ -69,14 +81,14 @@ class EfficientAttention(nn.Module):
         #* Check if PyTorch has scaled_dot_product_attention (added in 2.4)
         #* If available, it is more optimized than manual softmax + matmul
         if hasattr(F, 'scaled_dot_product_attention'):
-            attn_mask = self.mask[:T, :T].to(torch.bool)
+            attn_mask = self.mask[:, :, :T, :T].bool()
             y = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask, dropout_p=self.attn_dropout.p if self.training else 0.0)
         else:
             # Calculate Score
             #* It calculates how much every token relates to every other token
             att = (q @ k.transpose(-2, -1)) * (1.0/math.sqrt(self.d_head))
 
-            mask = self.mask[:T, :T]
+            mask = self.mask[:, :, :T, :T]
 
             att = att.masked_fill(mask==0, float('-inf'))
             
@@ -93,11 +105,3 @@ class EfficientAttention(nn.Module):
         y = self.resid_dropout(y)
         
         return y
-    
-if __name__ == "__main__":
-    model = EfficientAttention(d_model=256, n_head=8, n_kv_head=2, window_size=16)
-    x = torch.randn(1, 64, 256) # [Batch, Time, Channels]
-    output = model(x)
-    
-    print(f"Output Shape: {output.shape}") # Should be [1, 64, 256]
-    print(f"Param Count: {sum(p.numel() for p in model.parameters())}")

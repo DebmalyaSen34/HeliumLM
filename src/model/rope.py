@@ -57,7 +57,8 @@ def apply_rotary_pos_emb(xq: torch.Tensor, xk: torch.Tensor, cos: torch.Tensor, 
     Args:
         xq (torch.Tensor): x query tensor.
         xk (torch.Tensor): x key tensor.
-        freqs_cis (torch.Tensor): Polar coordinates of frequencies.
+        cos (torch.Tensor): Cosine components for rotation.
+        sin (torch.Tensor): Sine components for rotation.
     """
     
 

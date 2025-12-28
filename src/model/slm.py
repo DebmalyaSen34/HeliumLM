@@ -16,6 +16,8 @@ class TinySLM(nn.Module):
         # 1. Embeddings
         self.vocab_size = config['vocab_size']
         self.d_model = config['d_model']
+        self.max_seq_len = config['max_seq_len']
+        
         self.token_embedding = nn.Embedding(self.vocab_size, self.d_model)
         self.dropout = nn.Dropout(config.get('dropout', 0.0))
         
@@ -46,6 +48,17 @@ class TinySLM(nn.Module):
             dim=self.d_model//config['n_head'],
             end=config['max_seq_len']
         )
+        
+        # 7. Initialize Weights
+        self.apply(self._init_weights)
+        
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
         
     def forward(self, idx: torch.Tensor, targets=None):
         B, T = idx.shape
