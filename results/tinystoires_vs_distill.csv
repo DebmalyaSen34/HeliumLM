@@ -1,0 +1,6 @@
+Metric,TinyStories-33M (Baseline),HeliumLM (15M)
+Size,100%,45%
+Grammar,7.6,4.5
+Consistency,7.9,3.6
+Creativity,5.5, 4.3
+Speed (Tok/s),46.16,65.16

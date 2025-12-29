@@ -1,0 +1,33 @@
+{
+    "device": "mps",
+    "num_workers": 4,      
+    
+    "vocab_size": 50257,
+    "d_model": 256,
+    "n_layers": 8,
+    "n_head": 8,
+    "n_kv_head": 2,        
+    "window_size": 1024,     
+    "max_seq_len": 1024,    
+    "mlp_ratio": 2.5,
+    "dropout": 0.1,
+    
+    "batch_size": 16,       
+    "accum_steps": 4,      
+    "learning_rate": 3e-4, 
+    "max_epochs": 1,
+    "patience": 3,
+    "weight_decay": 0.01,  
+    "grad_clip": 1.0,      
+    
+    "train_file": "/kaggle/input/textbook-dataset/hybrid_textbook_data.jsonl",
+    "train_mode": "huggingface",
+    "is_half": false,
+    "hf_dataset_name": "roneneldan/TinyStories",
+    "val_file": "/root/validation_textbook.jsonl",
+    "tokenizer_path": "/root/data/tokenizers/tiny_slm_tokenizer.json",
+    "save_dir": "checkpoints",
+    
+    "use_wandb": true,    
+    "log_interval": 10     
+}

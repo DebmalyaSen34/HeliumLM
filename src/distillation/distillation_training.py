@@ -1,7 +1,6 @@
 import torch
 import torch.optim as optim
 from torch.utils.data import DataLoader
-import torch.nn as nn
 import math
 import time
 import os
@@ -10,7 +9,8 @@ import wandb
 import json
 import threading
 from transformers import GPT2Tokenizer, GPT2LMHeadModel
-from huggingface_hub import HfApi, upload_file
+from huggingface_hub import HfApi
+from transformers import AutoTokenizer
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -24,10 +24,10 @@ from ...utils import get_lr, evaluate, EarlyStopping
 
 # Hyperparameters and Configurations
 try:
-    with open('config/config.json', 'r') as f:
+    with open('config/heliumLM-nano-gpt2-config.json', 'r') as f:
         CONFIG = json.load(f)
 except FileNotFoundError:
-    raise FileNotFoundError("Configuration file 'config/config.json' not found.")
+    raise FileNotFoundError("Configuration file 'config/heliumLM-nano-gpt2-config.json' not found.")
 
 # Teacher Model Config
 TEACHER_NAME = "gpt2"
@@ -43,57 +43,65 @@ def train():
     print(f"Using device: {device}")
     mode = CONFIG['train_mode']
     print(f"Training mode: {mode}")
+
+    CONFIG['vocab_size'] = 50257  # GPT-2 vocab size
+
+    #* Limit max_seq_len to GPT-2's max length
+    original_seq_len = CONFIG.get('max_seq_len', 512)
+    CONFIG['max_seq_len'] = min(original_seq_len, 1024)  # GPT-2 max length
+    print(f"⚠️  Limiting max_seq_len to {CONFIG['max_seq_len']} (was {original_seq_len})")
+
+    #* Ensure window_size matches max_seq_len to avoid mask mismatch errors
+    if 'window_size' in CONFIG and CONFIG['window_size'] < CONFIG['max_seq_len']:
+        print(f"⚠️  Increasing window_size from {CONFIG['window_size']} to {CONFIG['max_seq_len']} to match sequence length")
+        CONFIG['window_size'] = CONFIG['max_seq_len']
+
+    # Initialize Hugging Face API
+    api = HfApi(token=os.getenv("HF_TOKEN"))
     
-    # Hugging Face API
-    api = HfApi(token=os.getenv("HUGGINGFACE_API_TOKEN"))
-    
-    #* 1. Load Teacher model & tokenizer
+    # 1. Load Teacher model & tokenizer
 
     print("Loading Teacher Model (GPT-2)...")
     teacher_model = GPT2LMHeadModel.from_pretrained(TEACHER_NAME).to(device)
     teacher_model.eval()
 
-    #* Freeze Teacher weights (Why? No training on teacher)
+    # Freeze Teacher weights
     for param in teacher_model.parameters():
         param.requires_grad = False
-    
-    # Load Teacher Tokenizer - Very time consuming step
+
     print("Loading Teacher Tokenizer...")
     teacher_tokenizer = GPT2Tokenizer.from_pretrained(TEACHER_NAME)
     teacher_tokenizer.pad_token = teacher_tokenizer.eos_token
 
-    # Save tokenizer locally for dataset use
+    print("Saving Teacher Tokenizer...")
     os.makedirs(os.path.dirname(CONFIG['tokenizer_path']), exist_ok=True)
     teacher_tokenizer.save_pretrained(os.path.dirname(CONFIG['tokenizer_path']))
+    print(f"Teacher Tokenizer saved to {CONFIG['tokenizer_path']}")
 
-    #* 2. Setup Dataset
+    # 2. Setup Dataset
 
-    # Check training mode
     if mode == "huggingface":
         train_source = CONFIG['hf_dataset_name']
         print(f"Training mode: Hugging Face Dataset - {train_source}")
-        
-        # Ensure tokenizer exists
-        if not os.path.exists(CONFIG['tokenizer_path']):
+        if teacher_tokenizer is None:
             raise FileNotFoundError("Tokenizer not found. Please provide a tokenizer for Hugging Face datasets.")
     else:
         train_source = CONFIG['train_file']
         print(f"Training mode: Local File - {train_source}")
-        
-        # If tokenizer doesn't exist, train a new one
         if not os.path.exists(CONFIG['tokenizer_path']):
             print("Tokenizer not found. Training a new tokenizer...")
             train_tokenizer(
                 dataset_name=CONFIG['train_file'],
-                vocab_size=CONFIG['vocab_size'],
+                voacb_size=CONFIG['vocab_size'],
             )
             print("Tokenizer training complete.")
             
-    # Create DataLoader
     dataset = TextBookDataset(
         source=train_source,
         tokenizer_path=CONFIG['tokenizer_path'],
-        max_length=CONFIG['max_seq_len']
+        max_length=CONFIG['max_seq_len'],
+        tokenizer=teacher_tokenizer,
+        cache_dir="/root/data/cache"
     )
             
     train_loader = DataLoader(
@@ -103,11 +111,10 @@ def train():
         pin_memory=True if device == "cuda" else False,
     )
     
-    # Check for validation dataset
     if os.path.exists(CONFIG['val_file']):
         # Validation Data Loader
         val_ds = TextBookDataset(
-            source=CONFIG['val_file'],
+            file_path=CONFIG['val_file'],
             tokenizer_path=CONFIG['tokenizer_path'],
             max_length=CONFIG['max_seq_len']
         )
@@ -122,23 +129,14 @@ def train():
         print("Warning: Validation file not found. Skipping validation.")
         val_loader = None
 
-    #* 3. Initialize Student Model
-
-    #* Make sure student vocab size matches tokenizer
-    CONFIG['vocab_size'] = 50257  # GPT-2 vocab size
-
-    #* Limit max_seq_len to GPT-2's max length
-    CONFIG['max_seq_len'] = min(CONFIG.get('max_seq_len', 512), 1024)  # GPT-2 max length
-    print(f"⚠️  Limiting max_seq_len to {CONFIG['max_seq_len']} for GPT-2 compatibility")
-
-    # Student model
+    # 3. Initialize Student Model
+    #     
     model = TinySLM(config=CONFIG).to(device)
 
-    # Optional: Compile model for optimization (PyTorch 2.0+)
-    if torch.__version__[0] == '2':
-        print('Compiling the model with torch.compile() for optimization...')
-        # Use max-autotune for L40S (Triton/Inductor backend)
-        model = torch.compile(model, mode="reduce-overhead")
+    # if torch.__version__[0] == '2':
+    #     print('Compiling the model with torch.compile() for optimization...')
+    #     # Use max-autotune for L40S (Triton/Inductor backend)
+    #     model = torch.compile(model, mode="reduce-overhead")
 
     optimzer = optim.AdamW(
         model.parameters(),
@@ -146,8 +144,6 @@ def train():
         weight_decay=CONFIG['weight_decay'],
         betas=(0.9, 0.95) # Standard for LLMs
     )
-
-    # Distillation Loss
     kde_criterion = DistillationLoss(temperature=4.0, alpha=0.5)
     
     scaler = torch.amp.GradScaler(device='cuda' if device=='cuda' else None)
@@ -172,12 +168,13 @@ def train():
     running_loss=0.0
     
     # We make a copy of the best model weights in RAM
-    # best_model_weights = copy.deepcopy(model.state_dict())
+    best_model_weights = copy.deepcopy(model.state_dict())
     
-    #* Set model to train mode
     model.train()
     
-    #* 4. Training Loop
+    # Start Epochs
+    
+    # 4. Training Loop
 
     for epoch in range(CONFIG['max_epochs']):
         print(f"Starting epoch {epoch+1}/{CONFIG['max_epochs']}...")
@@ -188,7 +185,7 @@ def train():
             # Calculate iteration number
             iter_num = epoch * len(train_loader) + batch_idx
 
-            #* Update the learning rate: Cosine Scheduler
+            # Update the learning rate: Cosine Scheduler
             lr = get_lr(iter_num, max_iters, warmup_iters, 3e-5, CONFIG['learning_rate'])
             for param_group in optimzer.param_groups:
                 param_group['lr'] = lr
@@ -196,19 +193,13 @@ def train():
             # Move data to device
             X, Y = X.to(device), Y.to(device)
             
-            #! SAFETY CHECK: Ensure we don't exceed GPT-2's limit
-            if X.shape[1] > 1024:
-                print(f"⚠️  Truncating sequence from {X.shape[1]} to 1024 tokens")
-                X = X[:, :1024]
-                Y = Y[:, :1024]
-
             # Create targets (Next Token Prediction)
             # In input:'the cat sat', target:'cat sat on'
             
             input_ids = X[:, :-1]
             targets = Y[:, 1:]
 
-            #* Teacher Forward Pass (No Grad)
+            # Teacher Forward Pass (No Grad)
             with torch.no_grad():
                 # GPT2 forward
                 teacher_outputs = teacher_model(input_ids)
@@ -216,13 +207,9 @@ def train():
 
                 # Safety: Ensure shapes match (GPT2 might have diff seq len behavior)
                 if teacher_logits.shape[1] != input_ids.shape[1]:
-                    print(f"⚠️  Shape mismatch: teacher={teacher_logits.shape}, student input={input_ids.shape}")
-                    # Truncate to match
-                    min_len = min(teacher_logits.shape[1], input_ids.shape[1])
-                    teacher_logits = teacher_logits[:, :min_len, :]
-                    targets = targets[:, :min_len]
+                    # Crop or pad teacher logits to match student input length
+                    teacher_logits = teacher_logits[:, :input_ids.shape[1], :]
             
-            #* Student Forward Pass + Loss
             if scaler:
                 with torch.amp.autocast('cuda', dtype=torch.bfloat16):
                     student_logits, _ = model(input_ids)
@@ -244,7 +231,6 @@ def train():
 
             loss = loss / CONFIG['accum_steps']
             
-            #* Backward Pass
             if scaler:
                 scaler.scale(loss).backward()
             else:
@@ -252,15 +238,14 @@ def train():
                 
             running_loss += loss.item() * CONFIG['accum_steps'] # Scale back for logging
             
-            #* Optimizer Step (after accum_steps)
+            # Optimizer Step (after accum_steps)
             if (batch_idx + 1) % CONFIG['accum_steps'] == 0:
-                # Gradient Clipping
                 if scaler:
                     scaler.unscale_(optimzer)
                 # clip_grad_norm_ returns the norm before clipping
                 grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), CONFIG['grad_clip'])
                 
-                #* Update Weights
+                # Update Weights
                 if scaler:
                     scaler.step(optimzer)
                     scaler.update()
@@ -268,13 +253,12 @@ def train():
                     optimzer.step()
                     
                 # Flush gradients
-                # Resets gradients to None for memory efficiency
                 optimzer.zero_grad(set_to_none=True)
                 
                 iter_num +=1
                 
                 # Upload the model checkpoint to Hugging Face every 5000 steps
-                if iter_num % 5000 == 0:
+                if iter_num % 2000 == 0:
                     print("Uploading model checkpoint to Hugging Face hub...")
                     
                     # Save the checkpoints locally first
@@ -287,7 +271,8 @@ def train():
                             api.upload_file(
                                 path_or_fileobj=local_path,
                                 path_in_repo=remote_path,
-                                repo_id="batmanLovesAI/HeliumLM"
+                                repo_id="batmanLovesAI/HeliumLM",
+                                repo_type="model"
                             )
                             print(f"Successfully uploaded checkpoint for iteration {iteration}.")
                         except Exception as e:

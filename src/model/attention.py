@@ -38,38 +38,37 @@ class EfficientAttention(nn.Module):
         self.attn_dropout = nn.Dropout(dropout)
         self.resid_dropout = nn.Dropout(dropout)
         
-        # Precompute the sliding window + casual mask
-        casual_mask = torch.tril(torch.ones(max_seq_len, max_seq_len))
-
-        #* Create sliding window mask
-        if self.window_size < max_seq_len: # Only apply if window_size is smaller than max_seq_len
-            # Mask out tokens that are outside the sliding window
+        # Mask Generation
+        causal_mask = torch.tril(torch.ones(max_seq_len, max_seq_len))
+        if self.window_size < max_seq_len:
             far_history_mask = torch.tril(torch.ones(max_seq_len, max_seq_len), diagonal=-self.window_size)
-            final_mask = casual_mask - far_history_mask
+            final_mask = causal_mask - far_history_mask
         else:
-            # Full attention (with casual masking)
-            final_mask = casual_mask
+            final_mask = causal_mask
 
         self.register_buffer("mask", final_mask.view(1, 1, max_seq_len, max_seq_len))
         
-    def forward(self, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, freqs_cis: torch.Tensor) -> torch.Tensor:
         B, T, C = x.size() # Batch size, sequence length, model dimension (Channels)
         
         # Calculate Q, K, V
         # Q is standard shape: [Batch, Time, 8 heads, 32 dim]
-        q = self.q_proj(x).view(B, T, self.n_head, self.d_head).transpose(1, 2) #* Why transpose? -> [B, n_head, T, d_head] PyTorch's matrix multiplication (@) operates on the last two dimensions, so we need Time and Dim at the end.
+        # ⚠️ FIX: Keep shape as [Batch, Time, Heads, Dim] for RoPE
+        # DO NOT TRANSPOSE YET
+        q = self.q_proj(x).view(B, T, self.n_head, self.d_head)
         
         # K, V are reduced shape: [Batch, Time, 2 heads, 32 dim]        
         # In standard attention, these would also be 8 heads
-        k = self.k_proj(x).view(B, T, self.n_kv_head, self.d_head).transpose(1, 2)
-        v = self.v_proj(x).view(B, T, self.n_kv_head, self.d_head).transpose(1, 2)
+        k = self.k_proj(x).view(B, T, self.n_kv_head, self.d_head)
+        v = self.v_proj(x).view(B, T, self.n_kv_head, self.d_head)
         
         #* Apply RoPE to Query and Key
-        q, k = apply_rotary_pos_emb(q, k, cos=cos, sin=sin)
-        # Tranpose back to [B, head, T, dim]
+        q, k = apply_rotary_pos_emb(q, k, freqs_cis=freqs_cis)
+        
+        # NOW Transpose for Attention: [B, Heads, T, Dim]
         q = q.transpose(1, 2)
         k = k.transpose(1, 2)
-        v = v.transpose(1, 2)
+        v = v.transpose(1, 2) # v didn't need RoPE, but transpose anyway
         
         #* Since K and V have fewer heads, we need to repeat them
         # so that they can align with the Q heads during attention computation

@@ -227,3 +227,7 @@ __marimo__/
 
 # workspaces
 *.code-workspace
+
+# jupyter notebooks
+.ipynb_checkpoints
+*.ipynb

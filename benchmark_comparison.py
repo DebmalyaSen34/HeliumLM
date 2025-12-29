@@ -6,6 +6,8 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 from tokenizers import Tokenizer
 from src.model.slm import TinySLM
 import json
+import pickle
+
 
 # CONFIG = {
 #     'vocab_size': 32000,
@@ -134,12 +136,12 @@ baseline_model = AutoModelForCausalLM.from_pretrained(baseline_name).to(DEVICE)
 
 print("Loading HeliumLM-nano...")
 
-with open("config/helium-nano-config.json", 'r') as f:
+with open("config/heliumLM-nano-gpt2-config.json", 'r') as f:
     my_config = json.load(f)
 
 my_model = TinySLM(my_config).to(DEVICE)
 
-checkpoint_path = "checkpoints/HeliumLM-nano.pt"
+checkpoint_path = "checkpoints/model_iter_4000.pt"
 state_dict = torch.load(checkpoint_path, map_location=DEVICE)
 
 unwanted_prefix = '_orig_mod.'
@@ -149,7 +151,18 @@ for k, v in list(state_dict.items()):
 
 my_model.load_state_dict(state_dict)
 
-my_tokenizer = Tokenizer.from_pretrained("data/tokenizer/heliumLM-nano-tokenizer.json")
+# Load tokenizer
+with open("data/tokenizer/heliumLM-gpt2-tinystories-tokenizer.pkl", "rb") as f:
+    my_tokenizer = pickle.load(f)
+
+# Debug: Check what type of object was loaded
+print(f"Tokenizer type: {type(my_tokenizer)}")
+
+# If it's a GPT-2 tokenizer (tiktoken or similar), the encoding might be different
+if isinstance(my_tokenizer, list):
+    # If it's a vocabulary list, you need a different approach
+    raise ValueError("Tokenizer was saved as a list. Need proper tokenizer object.")
+    
 my_model.eval()
 
 def print_result(model_name, text, time_taken):
@@ -178,12 +191,20 @@ if __name__ == "__main__":
 
 
     # --- ROUND 2: HELIUM-NANO ---
-    # Encode prompt
-    input_ids_my = my_tokenizer.encode(PROMPT).ids
+    # Encode prompt - Handle different tokenizer types
+    if hasattr(my_tokenizer, 'encode'):
+        # Standard tokenizers library or tiktoken
+        encoding = my_tokenizer.encode(PROMPT)
+        input_ids_my = encoding.ids if hasattr(encoding, 'ids') else encoding
+    elif callable(my_tokenizer):
+        # If it's a function-based tokenizer
+        input_ids_my = my_tokenizer(PROMPT)
+    else:
+        raise ValueError(f"Unknown tokenizer format: {type(my_tokenizer)}")
+    
     idx = torch.tensor([input_ids_my], dtype=torch.long, device=DEVICE)
 
     start_time = time.time()
-    # Call your NEW class method directly!
     generated_idx = my_model.generate(
         idx, 
         max_new_tokens=200, 
@@ -193,7 +214,10 @@ if __name__ == "__main__":
     )
     end_time = time.time()
 
-    # Decode output
-    # Note: generated_idx includes the prompt, so we decode the whole thing
-    text_my = my_tokenizer.decode(generated_idx[0].cpu().numpy())
+    # Decode output - Handle different tokenizer types
+    if hasattr(my_tokenizer, 'decode'):
+        text_my = my_tokenizer.decode(generated_idx[0].cpu().numpy())
+    else:
+        text_my = "Error: Cannot decode with this tokenizer type"
+    
     print_result("HELIUM-NANO (45M)", text_my, end_time - start_time)
