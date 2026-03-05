@@ -14,8 +14,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from src.model.slm import TinySLM
-from src.data.dataset import TextBookDataset
+from src.model.slm import HeliumLM
+from src.data.dataset import HeliumLMDataset
 from src.data.tokenizer import train_tokenizer
 from .utils import get_lr, evaluate, EarlyStopping
 
@@ -55,7 +55,7 @@ def train():
             )
             print("Tokenizer training complete.")
             
-    dataset = TextBookDataset(
+    dataset = HeliumLMDataset(
         source=train_source,
         tokenizer_path=CONFIG['tokenizer_path'],
         max_length=CONFIG['max_seq_len']
@@ -71,7 +71,7 @@ def train():
     
     if os.path.exists(CONFIG['val_file']):
         # Validation Data Loader
-        val_ds = TextBookDataset(
+        val_ds = HeliumLMDataset(
             file_path=CONFIG['val_file'],
             tokenizer_path=CONFIG['tokenizer_path'],
             max_length=CONFIG['max_seq_len']
@@ -88,7 +88,7 @@ def train():
         val_loader = None
     
     # Model Initialization
-    model = TinySLM(config=CONFIG).to(device)
+    model = HeliumLM(config=CONFIG).to(device)
 
     if torch.__version__[0] == '2':
         print('Compiling the model with torch.compile() for optimization...')

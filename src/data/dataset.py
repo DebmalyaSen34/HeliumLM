@@ -9,8 +9,8 @@ from datasets import load_dataset
 from typing import List, Tuple, Union
 from transformers import PreTrainedTokenizerBase
 
-class TextBookDataset(Dataset):
-    def __init__(self, source: str, tokenizer_path: str, max_length=512, is_half=False, tokenizer: Union[Tokenizer, PreTrainedTokenizerBase] = None, cache_dir: str = "data/cache"):
+class HeliumLMDataset(Dataset):
+    def __init__(self, source: str, tokenizer_path: str, max_length=512, is_half=False, complexity_level="all", tokenizer: Union[Tokenizer, PreTrainedTokenizerBase] = None, cache_dir: str = "data/cache"):
         """Dataset class for HeliumLM
 
         Args:
@@ -18,14 +18,16 @@ class TextBookDataset(Dataset):
             tokenizer_path (str): Path to your tokekinzer.
             max_length (int, optional): Maximum length of the sequence to be tokenized once. Defaults to 512.
             is_half (bool, optional): Set True if you want only first half of the dataset. Defaults to False.
+            complexity_level (str, optional): "simple" (<500 chars), "complex" (>=500 chars), or "all". Defaults to "all".
             tokenizer (Union[Tokenizer, PreTrainedTokenizerBase], optional): Tokenizer that is being used, can be something trained from scratch or from huggingface. Defaults to None.
+            cache_dir (str, optional): Directory to store cached tokenized dataset. Defaults to "data/cache".
 
         Raises:
             ValueError: If tokenizer or tokenizer path is not found.
         """
 
         self.tokenizer = tokenizer if tokenizer is not None else Tokenizer.from_file(tokenizer_path)
-
+        self.complexity_level = complexity_level
         # Determine tokenizer type
         # 'convert_tokens_to_ids' is a method of HuggingFace's PreTrainedTokenizerBase
         self.is_hf_tokenizer = hasattr(self.tokenizer, 'convert_tokens_to_ids')
@@ -106,6 +108,17 @@ class TextBookDataset(Dataset):
         """
         
         all_ids = []
+
+        THRESHOLD = 500  # Character threshold to differentiate simple and complex texts
+
+        def is_valid(text: str) -> bool:
+            if not text:
+                return False
+            if self.complexity_level == "simple" and len(text) >= THRESHOLD:
+                return len(text)<THRESHOLD
+            elif self.complexity_level == "complex":
+                return len(text)>=THRESHOLD
+            return True
         
         # Check if source is a local file
         if source.endswith('.jsonl'):
@@ -114,8 +127,11 @@ class TextBookDataset(Dataset):
             with open(source, 'r', encoding='utf-8') as f:
                 for line in f:
                     try:
-                        text = json.loads(line).get('text', '')
-                        if text:
+                        data = json.loads(line)
+                        text = data.get('text', '')
+
+                        # Filter based on complexity level
+                        if is_valid(text):
                             all_ids.extend(self._tokenize_text(text))
                             all_ids.append(self.sep_token_id)
                     except json.JSONDecodeError:
@@ -130,7 +146,9 @@ class TextBookDataset(Dataset):
                 if idx % 10000 == 0:
                     print(f"Processed {idx}/{len(dataset)} records...")
                 text = item.get('text', item.get('response', ''))
-                if text:
+                
+                # Filter based on complexity level
+                if is_valid(text):
                     all_ids.extend(self._tokenize_text(text))
                     all_ids.append(self.sep_token_id)
         print(f"Tokenizeation completed. Total tokens: {len(all_ids):,}")

@@ -10,7 +10,6 @@ import json
 import threading
 from transformers import GPT2Tokenizer, GPT2LMHeadModel
 from huggingface_hub import HfApi
-from transformers import AutoTokenizer
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -24,15 +23,10 @@ from ...utils import get_lr, evaluate, EarlyStopping
 
 # Hyperparameters and Configurations
 try:
-    with open('config/heliumLM-nano-gpt2-config.json', 'r') as f:
+    with open('config/heliumLM-distilled-config.json', 'r') as f:
         CONFIG = json.load(f)
 except FileNotFoundError:
-    raise FileNotFoundError("Configuration file 'config/heliumLM-nano-gpt2-config.json' not found.")
-
-# Teacher Model Config
-TEACHER_NAME = "gpt2"
-DISTILL_TEMP = 2.0
-DISTILL_ALPHA = 0.5
+    raise FileNotFoundError("Configuration file 'config/heliumLM-distilled-config.json' not found.")
 
 #* Training Loop
 def train():
@@ -62,7 +56,7 @@ def train():
     # 1. Load Teacher model & tokenizer
 
     print("Loading Teacher Model (GPT-2)...")
-    teacher_model = GPT2LMHeadModel.from_pretrained(TEACHER_NAME).to(device)
+    teacher_model = GPT2LMHeadModel.from_pretrained(CONFIG['teacher']).to(device)
     teacher_model.eval()
 
     # Freeze Teacher weights
@@ -70,7 +64,7 @@ def train():
         param.requires_grad = False
 
     print("Loading Teacher Tokenizer...")
-    teacher_tokenizer = GPT2Tokenizer.from_pretrained(TEACHER_NAME)
+    teacher_tokenizer = GPT2Tokenizer.from_pretrained(CONFIG['teacher'])
     teacher_tokenizer.pad_token = teacher_tokenizer.eos_token
 
     print("Saving Teacher Tokenizer...")
@@ -144,7 +138,7 @@ def train():
         weight_decay=CONFIG['weight_decay'],
         betas=(0.9, 0.95) # Standard for LLMs
     )
-    kde_criterion = DistillationLoss(temperature=4.0, alpha=0.5)
+    kde_criterion = DistillationLoss(temperature=CONFIG['distill_temperature'], alpha=CONFIG['distill_alpha'])
     
     scaler = torch.amp.GradScaler(device='cuda' if device=='cuda' else None)
     early_stopper = EarlyStopping(patience=CONFIG['patience'])

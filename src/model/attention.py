@@ -49,58 +49,49 @@ class EfficientAttention(nn.Module):
         self.register_buffer("mask", final_mask.view(1, 1, max_seq_len, max_seq_len))
         
     def forward(self, x: torch.Tensor, freqs_cis: torch.Tensor) -> torch.Tensor:
-        B, T, C = x.size() # Batch size, sequence length, model dimension (Channels)
+        B, T, C = x.size()
         
-        # Calculate Q, K, V
-        # Q is standard shape: [Batch, Time, 8 heads, 32 dim]
+        # 1. Project and View
         # ⚠️ FIX: Keep shape as [Batch, Time, Heads, Dim] for RoPE
         # DO NOT TRANSPOSE YET
-        q = self.q_proj(x).view(B, T, self.n_head, self.d_head)
+        q = self.q_proj(x)
+        k = self.k_proj(x)
+        v = self.v_proj(x)
+
+        # Reshape Q, K, V for multi-head attention
+        # q: [B, T, C] -> [B, T, n_head, d_head]
+        # k: [B, T, C'] -> [B, T, n_kv_head, d_head]
+        # v: [B, T, C'] -> [B, T, n_kv_head, d_head]
+        q = q.view(B, T, self.n_head, self.d_head)
+        k = k.view(B, T, self.n_kv_head, self.d_head)
+        v = v.view(B, T, self.n_kv_head, self.d_head)
         
-        # K, V are reduced shape: [Batch, Time, 2 heads, 32 dim]        
-        # In standard attention, these would also be 8 heads
-        k = self.k_proj(x).view(B, T, self.n_kv_head, self.d_head)
-        v = self.v_proj(x).view(B, T, self.n_kv_head, self.d_head)
-        
-        #* Apply RoPE to Query and Key
+        # 2. Apply RoPE (Now the dimensions align correctly)
         q, k = apply_rotary_pos_emb(q, k, freqs_cis=freqs_cis)
         
-        # NOW Transpose for Attention: [B, Heads, T, Dim]
+        # 3. NOW Transpose for Attention: [B, Heads, T, Dim]
         q = q.transpose(1, 2)
         k = k.transpose(1, 2)
-        v = v.transpose(1, 2) # v didn't need RoPE, but transpose anyway
+        v = v.transpose(1, 2) # v didn't need RoPE, but needs transpose
         
-        #* Since K and V have fewer heads, we need to repeat them
-        # so that they can align with the Q heads during attention computation
-        # We take the 2 KV heads and copy them 4 times each to get 8 "virtual" heads
-        # This allows the math to work without storing 8 unique heads in memory
+        # 4. GQA Repeat
         k = k.repeat_interleave(self.n_rep, dim=1)
         v = v.repeat_interleave(self.n_rep, dim=1)
         
-        #* Check if PyTorch has scaled_dot_product_attention (added in 2.4)
-        #* If available, it is more optimized than manual softmax + matmul
         if hasattr(F, 'scaled_dot_product_attention'):
             attn_mask = self.mask[:, :, :T, :T].bool()
-            y = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask, dropout_p=self.attn_dropout.p if self.training else 0.0)
+            y = F.scaled_dot_product_attention(
+                q, k, v, 
+                attn_mask=attn_mask, 
+                dropout_p=self.attn_dropout.p if self.training else 0.0
+            )
         else:
-            # Calculate Score
-            #* It calculates how much every token relates to every other token
             att = (q @ k.transpose(-2, -1)) * (1.0/math.sqrt(self.d_head))
-
-            mask = self.mask[:, :, :T, :T]
-
-            att = att.masked_fill(mask==0, float('-inf'))
-            
+            mask_slice = self.mask[:, :, :T, :T]
+            att = att.masked_fill(mask_slice == 0, float('-inf'))
             att = F.softmax(att, dim=-1)
             att = self.attn_dropout(att)
             y = att @ v
-        
-        #* Reshape and Output Projection
-        # y: [B, n_head, T, d_head] -> [B, T, n_head, d_head] -> [B, T, C]
+            
         y = y.transpose(1, 2).contiguous().view(B, T, C)
-        
-        #* Dropout
-        y = self.output_proj(y)
-        y = self.resid_dropout(y)
-        
-        return y
+        return self.resid_dropout(self.output_proj(y))

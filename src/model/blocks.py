@@ -34,6 +34,7 @@ class SwiGLUMLP(nn.Module):
         fused = gate * up
         return self.dropout(self.down_proj(fused))
     
+    
 class DecoderBlock(nn.Module):
     def __init__(self, config):
         super().__init__()

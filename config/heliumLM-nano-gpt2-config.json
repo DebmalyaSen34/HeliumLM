@@ -19,6 +19,10 @@
     "patience": 3,
     "weight_decay": 0.01,  
     "grad_clip": 1.0,      
+
+    "teacher": "gpt2",
+    "distill_alpha": 0.8,
+    "distill_temperature": 1.0,
     
     "train_file": "/kaggle/input/textbook-dataset/hybrid_textbook_data.jsonl",
     "train_mode": "huggingface",

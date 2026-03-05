@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class DistillationLoss(nn.Module):
-    def __init__(self, temperature=2.0, alpha=0.5):
+    def __init__(self, temperature=1.0, alpha=0.8):
         super().__init__()
         self.temperature = temperature
         self.alpha = alpha
